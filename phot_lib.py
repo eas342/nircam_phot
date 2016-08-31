@@ -198,7 +198,7 @@ def plot_long_series(t,fileType,ax=None,fig=None,combo=False):
     ax.set_ylabel('Normalized Flux')
 
 def several_test_series(testDirectories,testName='Group',multiType='All',
-                        guessCoord = [1406,1039]):
+                        guessCoord = [1406,1039],**kwargs):
     """ Collects the file table, photometry and makes a plot for a long time series"""
     if multiType == 'All':
         fileTypes = ['.red','slp/red','']
@@ -213,7 +213,8 @@ def several_test_series(testDirectories,testName='Group',multiType='All',
         fileTable = get_file_table(testDirectories,fileType=fileType)
         ## Make the file name cleaner
         cleanName = '_'.join(re.split(r'\.|/',fileTypeNames[ind]))
-        t = get_phot_table(fileTable,name=testName+'_'+cleanName,apPos=guessCoord)
+        t = get_phot_table(fileTable,name=testName+'_'+cleanName,apPos=guessCoord,
+                           **kwargs)
         plot_long_series(t,fileTypeNames[ind],ax=axes[ind],fig=fig)
 
     fig.savefig('plots/tser_'+testName+'.pdf')
