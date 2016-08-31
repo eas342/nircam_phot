@@ -1,0 +1,8 @@
+.ipynb_checkpoints/*
+*.ipynb
+*.pdf
+*.png
+output_data/*
+plots/*
+*~
+*.pyc
