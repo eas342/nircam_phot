@@ -101,11 +101,12 @@ def do_phot(fileName,apPos=[1406,1039],r_src=70,r_in=72,r_out=80,showPlot=False,
     ## Plot
     if showPlot:
         fig, ax = plt.subplots(figsize=(6,6))
-        ax.imshow(img,vmin=0,vmax=3.0 * ampPeak)
+        ax.imshow(img,vmin=0,vmax=1.0 * ampPeak)
         apSource.plot(ax=ax,color='white',linewidth=3)
         apBack.plot(ax=ax,color='yellow',linewidth=3)
         ax.set_xlim(apUse[0] - r_out - 30, apUse[0] + r_out + 30)
         ax.set_ylim(apUse[1] - r_out - 30, apUse[1] + r_out + 30)
+        fig.savefig('phot_aps.pdf')
 
     photTable['x_used'] = photTable['xcenter_raw'].data[0]
     photTable['y_used'] = photTable['ycenter_raw'].data[0]
@@ -113,6 +114,7 @@ def do_phot(fileName,apPos=[1406,1039],r_src=70,r_in=72,r_out=80,showPlot=False,
     photTable['y_absolute'] = photTable['y_used'] + header['ROWCORNR']
     keepParams = ['aperture_sum_raw','resid_sum','aperture_sum_bkg','file name',
                   'time-start','x_used','y_used','x_absolute','y_absolute']
+
     return photTable[keepParams]
 
 def get_file_table(testDirectories,fileType='.red'):
@@ -137,8 +139,8 @@ def get_file_table(testDirectories,fileType='.red'):
                 useFileType = fileType
                 SlopeType = 'Last - First'
 
-            fileSearchShort = testDir+'/*I50'+useFileType+'.fits'
-            fileSearchLong = testDir+'/*I050'+useFileType+'.fits'
+            fileSearchShort = testDir+'/*I51'+useFileType+'.fits'
+            fileSearchLong = testDir+'/*I051'+useFileType+'.fits'
 
 
             for search in [fileSearchLong,fileSearchShort]:
@@ -160,13 +162,13 @@ def get_phot_table(fileTable,name='phot',**kwargs):
         phot_table = do_phot(file['Full Path'],slopeType=file['Slope Type'],
                              **kwargs)
         phot_table['Test Name'] = file['Test Name']
-        t = vstack([phot_table,t])
+        t = vstack([t,phot_table])
 
 
     fluxRef = np.nanmedian(t['resid_sum'])
     t['norm_flux'] = t['resid_sum'] / fluxRef
     t['Full Path'] = fileTable['Full Path']
-    
+
     # Save to file
     t.write('output_data/longWLP8_series/tser_'+name+'.csv')
     return t
