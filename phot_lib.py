@@ -9,6 +9,7 @@ from astropy.time import Time
 import pdb
 from astropy.modeling import models, fitting
 import re
+import es_gen
 
 def get_slope_img(file,slopeType='Last - First'):
     """
@@ -117,7 +118,7 @@ def do_phot(fileName,apPos=[1406,1039],r_src=70,r_in=72,r_out=80,showPlot=False,
 
     return photTable[keepParams]
 
-def get_file_table(testDirectories,fileType='.red'):
+def get_file_table(testDirectories,fileType='.red',allFiles=False):
     fileList, testList, slopeTypeList = [], [], []
     ## Ignore this test since these files were corrupted
     badDirectories = ['_2016-01-12T17h09m18','_2016-01-12T17h13m56']
@@ -139,9 +140,15 @@ def get_file_table(testDirectories,fileType='.red'):
                 useFileType = fileType
                 SlopeType = 'Last - First'
 
-            fileSearchShort = testDir+'/*I51'+useFileType+'.fits'
-            fileSearchLong = testDir+'/*I051'+useFileType+'.fits'
-
+            if allFiles == True:
+                fileSearchShort = testDir+'/NRCN*'+useFileType+'.fits'
+                fileSearchLong = ''
+            else:
+                fileSearchShort = testDir+'/*I51'+useFileType+'.fits'
+                fileSearchLong = testDir+'/*I051'+useFileType+'.fits'
+                # These two searches are necessary to find a specific file
+                # since the integrations are split into I051 and I51 depending
+                # on the number of integrations
 
             for search in [fileSearchLong,fileSearchShort]:
                 newFiles = glob.glob(search)
@@ -173,7 +180,8 @@ def get_phot_table(fileTable,name='phot',**kwargs):
     t.write('output_data/longWLP8_series/tser_'+name+'.csv')
     return t
 
-def plot_long_series(t,fileType,ax=None,fig=None,combo=False):
+def plot_long_series(t,fileType,ax=None,fig=None,combo=False,
+                     returnFigs=False):
     if fig == None:
         fig, ax = plt.subplots(figsize=(15,5))
 
@@ -195,9 +203,11 @@ def plot_long_series(t,fileType,ax=None,fig=None,combo=False):
         ax.plot(x,y,'o')
         ax.text(np.nanmean(x),np.nanmin(y) - 1e-3,test,horizontalalignment='center',
                 verticalalignment='top')
-    ax.set_title('Using '+fileType+' files')
+    ax.set_title('Using '+fileType)
     ax.set_xlabel('Time (JD)')
     ax.set_ylabel('Normalized Flux')
+    if returnFigs == True:
+        return fig, ax
 
 def several_test_series(testDirectories,testName='Group',multiType='All',
                         guessCoord = [1406,1039],**kwargs):
@@ -221,3 +231,34 @@ def several_test_series(testDirectories,testName='Group',multiType='All',
 
     fig.savefig('plots/tser_'+testName+'.pdf')
     return t
+
+def comb_phot(photTab,table_names=None,avgFlux=True):
+    """ Combines photometry Tables - usually the A and B sides """
+
+    ## Find the lengths of the tables and get the minimum
+    lenArr = []
+    for oneTab in photTab:
+        lenArr.append(len(oneTab))
+    useLen = np.min(lenArr)
+
+    ## Truncate all tables to the common length and find average flux
+    useArr = []
+    totFlux = np.zeros(useLen)
+    for oneTab in photTab:
+        shrinkTable = oneTab[0:useLen]
+        useArr.append(shrinkTable)
+        if avgFlux == True:
+            totFlux = totFlux + shrinkTable['norm_flux']
+
+    comb = hstack(useArr,table_names=table_names)
+    if avgFlux == True:
+        avgFlux = totFlux / float(len(photTab))
+        comb['avg_norm_fl'] = avgFlux
+
+        x = useArr[0]['time-start']
+        polyCoeff = es_gen.robust_poly(x,comb['avg_norm_fl'],1)
+        comb['avg_detrend_fl'] = avgFlux / np.polyval(polyCoeff,x)
+
+    return comb
+
+
