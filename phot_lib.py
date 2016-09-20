@@ -36,6 +36,19 @@ def get_slope_img(file,slopeType='Last - First'):
         print('Invalid Slope Type')
         slp = np.array(0)
     HDU.close()
+
+    ## Must manually apply the flat fields to .red files
+    if (file[-9:] == '.red.fits') & (header['DOFLAT'] == True):
+        flatPrefix = '/usr/local/nircamsuite/cal/Flat/ISIMCV3/'
+        if header['DETECTOR'] == 'NRCA1':
+            flatFile = 'NRCA1_17004_PFlat_F150W_CLEAR_2016-04-05.fits'
+        elif header['DETECTOR'] == 'NRCB4':
+            flatFile = 'NRCB4_17047_PFlat_F150W_CLEAR_2016-04-05.fits'
+        else:
+            print("Detector doesn't have an assigned flat field.")
+        flatimg = fits.getdata(flatPrefix+flatFile,ext=1)
+        slp = slp / flatimg
+        #pdb.set_trace()
     return slp, header
 
 def find_gausspeak(img,posGuess,widthGuess=2,windowSize=10,showPlot=False):
@@ -72,7 +85,7 @@ def find_gausspeak(img,posGuess,widthGuess=2,windowSize=10,showPlot=False):
     return [result.x_mean.value, result.y_mean.value], result.amplitude.value
 
 def do_phot(fileName,apPos=[1406,1039],r_src=70,r_in=72,r_out=80,showPlot=False,
-            slopeType='Last - First',fixedPosition=False):
+            slopeType='Last - First',fixedPosition=False,bkgSum='ApSum',bkgGeom='Annulus'):
     img, header = get_slope_img(fileName,slopeType=slopeType)
     apGuess = apPos - np.array([header['COLCORNR'],header['ROWCORNR']])
     if fixedPosition:
@@ -82,15 +95,63 @@ def do_phot(fileName,apPos=[1406,1039],r_src=70,r_in=72,r_out=80,showPlot=False,
         apUse, ampPeak = find_gausspeak(img,apGuess)
         
     apSource = CircularAperture(apUse,r_src)
-    apBack = CircularAnnulus(apUse,r_in=r_in,r_out=r_out)
     
     ## Do the photometry
     mask = np.isnan(img)
-    photTable = aperture_photometry(img, apSource,mask=mask)
-    backTable = aperture_photometry(img, apBack,mask=mask)
-    photTable = hstack([photTable, backTable], table_names=['raw', 'bkg'])
-    photTable['resid_sum'] = (photTable['aperture_sum_raw'] - 
-                              photTable['aperture_sum_bkg'] * apSource.area() / apBack.area())
+    if bkgGeom=='Annulus' and bkgSum=='ApSum':
+        """ Standard Photutils aperture and background subtraction"""
+        photTable = aperture_photometry(img, apSource,mask=mask)
+        apBack = CircularAnnulus(apUse,r_in=r_in,r_out=r_out)
+        backTable = aperture_photometry(img, apBack,mask=mask)
+        photTable = hstack([photTable, backTable], table_names=['raw', 'bkg'])
+        bkgFlux = photTable['aperture_sum_bkg'] * apSource.area() / apBack.area()
+        photTable['resid_sum'] = (photTable['aperture_sum_raw'] - 
+                                  bkgFlux)
+    else:
+        """ 
+        My non-standard background methods 
+        All these methods calculate the background region as a boolean array
+        Then, they perform various ways of creating a residual image with the background
+        subtracted.
+        Finally, they do photometry on the residual image. First, they calculate the residual
+        image photometry, the full image photometry and the difference. This is the 
+        background expected.
+        """
+        yimg, ximg = np.mgrid[0:img.shape[0],0:img.shape[1]]
+        if bkgGeom == 'Annulus':
+            pts = (((ximg - apUse[0])**2 + (yimg - apUse[1])**2 >= r_in**2 ) & 
+                   ((ximg - apUse[0])**2 + (yimg - apUse[1])**2 < r_out**2))
+        elif bkgGeom == 'Circle-in-Square':
+            pts = (((ximg - apUse[0])**2 + (yimg - apUse[1])**2 >= r_in**2) &
+                   (np.abs(ximg - apUse[0]) < r_out) &
+                   (np.abs(yimg - apUse[1]) < r_out))
+        else:
+            print("Unkown geometry")
+        pts = pts & np.invert(mask) ## ignore Nans
+        if bkgSum == 'ColFit':
+            bkgFlux = np.nan
+            resImg = img - bkgFlux
+        else:
+            if bkgSum == 'Sum':
+                area = np.sum(pts)
+                bkgFluxPerPix = np.sum(img[pts]) / area
+            elif bkgSum == 'Median':
+                bkgFluxPerPix = np.median(img[pts])
+            elif bkgSum == 'Robust Mean':
+                medianBF = np.median(img[pts])
+                MADBF = np.median(np.abs(img[pts] - medianBF))
+                keepers = (np.abs(img - medianBF) < 5.0 * MADBF) & pts
+                area = np.sum(keepers)
+                bkgFluxPerPix = np.sum(img[keepers]) / area
+            ## Residual image
+            resimg = img - bkgFluxPerPix
+
+        photTable = aperture_photometry(img,apSource,mask=mask)
+        residTable = aperture_photometry(resimg,apSource,mask=mask)
+        photTable = hstack([photTable, residTable], table_names=['raw', 'resid'])
+        photTable['resid_sum'] = photTable['aperture_sum_resid']
+        
+
     photTable['file name'] = os.path.basename(fileName)
 
     ## Find the time
@@ -104,16 +165,22 @@ def do_phot(fileName,apPos=[1406,1039],r_src=70,r_in=72,r_out=80,showPlot=False,
         fig, ax = plt.subplots(figsize=(6,6))
         ax.imshow(img,vmin=0,vmax=1.0 * ampPeak)
         apSource.plot(ax=ax,color='white',linewidth=3)
-        apBack.plot(ax=ax,color='yellow',linewidth=3)
+        if bkgGeom=='Annulus' and bkgSum=='ApSum':
+            apBack.plot(ax=ax,color='yellow',linewidth=3)
+        else:
+            plt.imshow(np.invert(pts),alpha=0.3,cmap=plt.cm.binary,interpolation='none',
+                       vmin=0,vmax=1)
         ax.set_xlim(apUse[0] - r_out - 30, apUse[0] + r_out + 30)
         ax.set_ylim(apUse[1] - r_out - 30, apUse[1] + r_out + 30)
+        
         fig.savefig('phot_aps.pdf')
 
     photTable['x_used'] = photTable['xcenter_raw'].data[0]
     photTable['y_used'] = photTable['ycenter_raw'].data[0]
     photTable['x_absolute'] = photTable['x_used'] + header['COLCORNR']
     photTable['y_absolute'] = photTable['y_used'] + header['ROWCORNR']
-    keepParams = ['aperture_sum_raw','resid_sum','aperture_sum_bkg','file name',
+    photTable['bkg_estimate'] = photTable['aperture_sum_raw'] - photTable['resid_sum']
+    keepParams = ['aperture_sum_raw','resid_sum','bkg_estimate','file name',
                   'time-start','x_used','y_used','x_absolute','y_absolute']
 
     return photTable[keepParams]
@@ -160,7 +227,8 @@ def get_file_table(testDirectories,fileType='.red',allFiles=False):
     fileTable['Full Path'] = fileList
     fileTable['Test Name'] = testList
     fileTable['Slope Type'] = slopeTypeList
-    return fileTable
+    sortedArgs = np.argsort(fileTable['Full Path'])
+    return fileTable[sortedArgs]
 
 def get_phot_table(fileTable,name='phot',**kwargs):
                    
@@ -261,4 +329,11 @@ def comb_phot(photTab,table_names=None,avgFlux=True):
 
     return comb
 
+
+def ABphot(fileTableList,**kwargs):
+    """ Does the A side photometry and B side photometry, then combines the results"""
+    photA = get_phot_table(fileTableList[0],apPos=[1406,1039],**kwargs)
+    photB = get_phot_table(fileTableList[1],apPos=[827,822],**kwargs)
+    comb = comb_phot([photA,photB],table_names=['A','B'])
+    return comb
 
